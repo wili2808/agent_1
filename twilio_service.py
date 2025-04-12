@@ -1,6 +1,7 @@
 # twilio_service.py
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.base.exceptions import TwilioRestException
 import os
 import logging
 from config import Config
@@ -29,7 +30,8 @@ class TwilioService:
             # En modo prueba, solo registra la acción pero no envía realmente
             logger.info(f"[MODO PRUEBA] Simulando envío de factura a {to}")
             logger.info(f"[MODO PRUEBA] Ruta del PDF: {pdf_path}")
-            logger.info(f"[MODO PRUEBA] URL simulada: {Config.BASE_URL}/{os.path.basename(pdf_path)}")
+            pdf_filename = os.path.basename(pdf_path)
+            logger.info(f"[MODO PRUEBA] URL simulada: {Config.BASE_URL}/static/{pdf_filename}")
             return "TEST-MESSAGE-SID-12345"
         
         if not self.client:
@@ -38,7 +40,9 @@ class TwilioService:
             
         try:
             # Construir URL pública del archivo
-            pdf_url = f"{Config.BASE_URL}/{os.path.basename(pdf_path)}"
+            # Asegúrate de que la URL incluya /static/ para coincidir con la ruta de tu aplicación
+            pdf_filename = os.path.basename(pdf_path)
+            pdf_url = f"{Config.BASE_URL}/static/{pdf_filename}"
             
             # Enviar mensaje
             message = self.client.messages.create(
@@ -48,6 +52,13 @@ class TwilioService:
             )
             logger.info(f"Factura enviada a {to}, SID: {message.sid}")
             return message.sid
+        except TwilioRestException as e:
+            if e.code == 63038:  # Código para límite diario excedido
+                logger.warning(f"Límite diario de mensajes Twilio excedido: {e}")
+                return "LIMIT_EXCEEDED"
+            else:
+                logger.error(f"Error de Twilio al enviar factura: {e}")
+                return None
         except Exception as e:
             logger.error(f"Error enviando factura: {e}")
             return None

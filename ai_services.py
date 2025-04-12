@@ -20,7 +20,7 @@ class IAService:
     
     def clasificar_mensaje(self, mensaje):
         """
-        Clasifica un mensaje en una de estas categorías: facturar, consultar, otro
+        Clasifica un mensaje en una de estas categorías: facturar, consultar, ayuda, estado, otro
         """
         if not mensaje or not self.llm:
             return "otro"
@@ -28,9 +28,11 @@ class IAService:
         try:
             prompt = ChatPromptTemplate.from_template(
                 "Clasifica este mensaje usando exactamente una de estas opciones:\n"
-                "- facturar\n"
-                "- consultar\n"
-                "- otro\n\n"
+                "- facturar (si solicita generar una factura)\n"
+                "- consultar (si solicita ver facturas existentes)\n"
+                "- ayuda (si pide instrucciones o ayuda)\n"
+                "- estado (si pregunta por el estado de un trámite o factura)\n"
+                "- otro (si no encaja en las anteriores)\n\n"
                 "Mensaje: {mensaje}\n"
                 "Respuesta (solo una palabra):"
             )
@@ -40,3 +42,20 @@ class IAService:
         except Exception as e:
             logger.error(f"Error clasificando mensaje: {e}")
             return "otro"
+            
+    def generar_respuesta_ayuda(self):
+        """
+        Genera un mensaje de ayuda para el usuario
+        """
+        return (
+            "🔍 *Asistente de Facturación* 🔍\n\n"
+            "Puedes realizar las siguientes acciones:\n\n"
+            "📝 *Generar una factura*\n"
+            "Ejemplo: \"Facturar 2 licencias a RFC ABC123456XYZ\"\n\n"
+            "📊 *Consultar facturas*\n"
+            "Ejemplo: \"Consultar facturas de RFC ABC123456XYZ\"\n\n"
+            "❓ *Ayuda*\n"
+            "Escribe \"ayuda\" para ver este mensaje\n\n"
+            "📱 *Estado de facturas*\n"
+            "Ejemplo: \"Estado de mi factura para RFC ABC123456XYZ\""
+        )
