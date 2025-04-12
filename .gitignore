@@ -1,0 +1,14 @@
+# Entorno virtual
+venv/
+__pycache__/
+
+# Archivos de entorno
+.env
+
+# Archivos generados
+*.pdf
+*.log
+
+# Configuraciones de IDE
+.idea/
+.vscode/

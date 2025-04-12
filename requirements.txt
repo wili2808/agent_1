@@ -1,0 +1,10 @@
+# requirements.txt
+flask==2.3.3
+twilio==8.2.0
+langchain==0.0.267
+langchain-ollama==0.0.1
+python-dotenv==1.0.0
+fpdf==1.7.2
+sqlalchemy==2.0.20
+gunicorn==21.2.0
+python-ngrok==0.1.0
