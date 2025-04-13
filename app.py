@@ -49,6 +49,10 @@ def webhook():
     respuesta = twilio_service.crear_respuesta()
     
     try:
+        # Preprocesar el mensaje
+        user_msg = ia_service.preprocesar_mensaje(user_msg)
+        logger.info(f"Mensaje preprocesado: {user_msg}")
+        
         # Clasificar intención del mensaje
         intencion = ia_service.clasificar_mensaje(user_msg)
         logger.info(f"Intención detectada: {intencion}")
