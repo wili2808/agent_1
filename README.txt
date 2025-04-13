@@ -49,3 +49,29 @@ La aplicación expone las siguientes rutas:
 - No incluir el archivo `.env` en control de versiones
 - Rotar periódicamente las credenciales de Twilio
 - Utilizar HTTPS para todas las comunicaciones
+
+
+
+
+
+# .env - Archivo de configuración de variables de entorno
+# IMPORTANTE: NO incluir este archivo en control de versiones
+
+# Modo de prueba (True/False)
+TEST_MODE=True
+
+# Twilio
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PHONE_NUMBER=whatsapp:
+
+# Base de datos
+DATABASE_URI=sqlite:///facturas.db
+
+# LLM
+LLM_MODEL=llama2:7b
+LLM_TEMPERATURE=0.0
+
+# Aplicación
+BASE_URL=
+UPLOAD_FOLDER=static
