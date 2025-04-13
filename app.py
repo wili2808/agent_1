@@ -6,7 +6,7 @@ from twilio_service import TwilioService
 from ai_services import IAService
 from message_parser import MessageParser
 from document_generator import DocumentGenerator
-from models import get_db_session, Cliente, Factura
+from models import get_db_session, Cliente, Factura, Producto, DetalleFactura
 from config import Config
 
 # Configuración de logging
@@ -52,30 +52,42 @@ def webhook():
         # Preprocesar el mensaje
         user_msg = ia_service.preprocesar_mensaje(user_msg)
         logger.info(f"Mensaje preprocesado: {user_msg}")
-        
+
         # Clasificar intención del mensaje
         intencion = ia_service.clasificar_mensaje(user_msg)
         logger.info(f"Intención detectada: {intencion}")
         
         # Procesar según la intención
+        
         if "facturar" in intencion:
             # Extraer datos del mensaje
             datos = parser.extraer_datos_factura(user_msg)
             logger.info(f"Datos extraídos: {datos}")
-            
+        
+            # Si la extracción regular falló, intentar con el LLM
+            if not datos['productos'] and not datos['rfc']:
+                datos_llm = ia_service.extraer_detalles_con_llm(user_msg)
+                if datos_llm:
+                    datos = datos_llm
+                    logger.info(f"Datos extraídos con LLM: {datos}")
+        
             # Validar datos
-            if not datos['rfc'] or not datos['producto'] or not datos['cantidad']:
-                respuesta.message("⚠️ No pude entender tu solicitud de facturación. Por favor, usa el formato:\n"
-                                "\"Facturar [cantidad] [producto] a RFC [tu_rfc]\"\n\n"
-                                "Por ejemplo: \"Facturar 2 licencias a RFC ABC123456XYZ\"")
+            if not datos['rfc']:
+                respuesta.message("⚠️ No pude identificar el RFC en tu solicitud. Por favor, incluye el RFC en tu mensaje.")
+            elif not datos['productos'] or len(datos['productos']) == 0:
+                respuesta.message("⚠️ No pude identificar productos en tu solicitud. Por favor, especifica los productos y cantidades.")
             elif not parser.validar_rfc(datos['rfc']):
-                respuesta.message("⚠️ El RFC proporcionado no tiene un formato válido. Un RFC debe tener 12 caracteres para personas morales o 13 para personas físicas, siguiendo el formato correcto.")
+                respuesta.message("⚠️ El RFC proporcionado no tiene un formato válido. Un RFC debe tener 12 caracteres para personas morales o 13 para personas físicas.")
             else:
-                # Generar factura
+                # Obtener precios de los productos
+                from producto_service import ProductoService
+                precios = ProductoService.obtener_precios_productos(datos['productos'])
+                
+                # Generar factura con múltiples productos
                 pdf_path = doc_generator.generar_factura(
                     datos["rfc"], 
-                    datos["producto"], 
-                    int(datos["cantidad"])
+                    datos["productos"],
+                    precios
                 )
                 
                 if pdf_path:
@@ -90,16 +102,47 @@ def webhook():
                             db_session.add(cliente)
                             db_session.flush()
                         
-                        # Crear registro de factura
+                        # Crear registro de factura (cabecera)
+                        total_factura = sum(item['cantidad'] * precios.get(item['nombre'].lower(), 100.0) for item in datos['productos'])
+                        
                         factura = Factura(
                             cliente_id=cliente.id,
-                            producto=datos["producto"],
-                            cantidad=int(datos["cantidad"]),
-                            precio_unitario=100.0,  # Valor por defecto
-                            total=100.0 * int(datos["cantidad"]),
+                            producto=", ".join([f"{p['cantidad']} {p['nombre']}" for p in datos['productos']]),
+                            cantidad=sum(p['cantidad'] for p in datos['productos']),
+                            precio_unitario=0.0,  # Ya no relevante para múltiples productos
+                            total=total_factura,
                             ruta_pdf=pdf_path
                         )
                         db_session.add(factura)
+                        db_session.flush()
+                        
+                        # Crear registros de detalle para cada producto
+                        for item in datos['productos']:
+                            nombre_producto = item['nombre']
+                            cantidad = item['cantidad']
+                            precio = precios.get(nombre_producto.lower(), 100.0)
+                            
+                            # Buscar producto en la BD o crear uno nuevo
+                            producto = db_session.query(Producto).filter(Producto.nombre.ilike(f"%{nombre_producto}%")).first()
+                            if not producto:
+                                producto = Producto(
+                                    codigo=nombre_producto[:10].upper(),
+                                    nombre=nombre_producto,
+                                    precio=precio
+                                )
+                                db_session.add(producto)
+                                db_session.flush()
+                            
+                            # Crear detalle de factura
+                            detalle = DetalleFactura(
+                                factura_id=factura.id,
+                                producto_id=producto.id,
+                                cantidad=cantidad,
+                                precio_unitario=precio,
+                                subtotal=cantidad * precio
+                            )
+                            db_session.add(detalle)
+                        
                         db_session.commit()
                     except Exception as e:
                         logger.error(f"Error guardando en DB: {e}")
@@ -108,15 +151,12 @@ def webhook():
                     # Enviar factura
                     logger.info(f"Enviando PDF: {pdf_path}")
                     if twilio_service.enviar_factura(pdf_path, sender):
-                        respuesta.message("✅ *Factura generada correctamente*\n\n"
-                                         f"📄 *Producto:* {datos['producto']}\n"
-                                         f"🔢 *Cantidad:* {datos['cantidad']}\n"
-                                         f"💼 *RFC:* {datos['rfc']}\n\n"
-                                         "La factura ha sido adjuntada a este mensaje. ¡Gracias por utilizar nuestro servicio!")
-                    else:
-                        respuesta.message("⚠️ Tu factura ha sido generada pero hubo un problema al enviarla. Por favor, intenta nuevamente en unos minutos o contacta a soporte.")
-                else:
-                    respuesta.message("❌ Lo siento, hubo un error al generar tu factura. Por favor, verifica tus datos e intenta nuevamente.")
+                        # Formar detalle de productos para el mensaje
+                        detalle_productos = ""
+                        for p in datos['productos']:
+                            precio = precios.get(p['nombre'].lower(), 100.0)
+                            subtotal = precio * p['cantidad']
+
         
         elif "consultar" in intencion:
             # Extraer RFC para consulta
@@ -154,14 +194,17 @@ def webhook():
                     logger.error(f"Error consultando facturas: {e}")
                     respuesta.message("❌ Ocurrió un error al consultar las facturas. Intenta nuevamente más tarde.")
         
+
         elif "ayuda" in intencion:
             # Enviar mensaje de ayuda
             respuesta.message(ia_service.generar_respuesta_ayuda())
-            
+
+
         elif "estado" in intencion:
             # Por ahora, dar una respuesta genérica para estado
             respuesta.message("🔍 El sistema de consulta de estado de facturas está en desarrollo. Próximamente podrás consultar el estado de tus trámites.")
-            
+
+
         else:
             # Respuesta para mensajes no reconocidos
             respuesta.message("🤖 No he entendido tu mensaje. Puedes escribir *ayuda* para ver las opciones disponibles.")
@@ -173,10 +216,13 @@ def webhook():
     return str(respuesta)
 
 
+
 # Ruta para verificar estado del servicio
 @app.route("/health", methods=["GET"])
 def health_check():
     return {"status": "ok", "version": "1.0.0"}
+
+
 
 # Ruta para simular un mensaje de WhatsApp (para pruebas)
 @app.route("/test/webhook", methods=["GET", "POST"])
@@ -252,50 +298,57 @@ def test_webhook():
     logger.info("=== NUEVA SOLICITUD DE PRUEBA ===")
     
     # Obtener datos del formulario
-    user_msg = request.form.get("Body", "")
+    user_msg = request.form.get("Body", "").lower()
     sender = request.form.get("From", "")
     
-    # Validar que sea un formato de WhatsApp
+    # Validar que sea un mensaje de WhatsApp
     if not sender.startswith('whatsapp:'):
-        return "Error: El número debe comenzar con 'whatsapp:'", 400
-    
-    # Crear una solicitud similar a la que enviaría Twilio
-    mock_request_data = {
-        "Body": user_msg,
-        "From": sender,
-        "To": Config.TWILIO_PHONE_NUMBER
-    }
-    
-    # Log para depuración
-    logger.info(f"Datos de prueba: {mock_request_data}")
+        logger.warning(f"Remitente no válido: {sender}")
+        return "Remitente no válido", 400
+
+    # Crear respuesta de Twilio
+    respuesta = twilio_service.crear_respuesta()
     
     try:
-        # Procesar el mensaje igual que en la ruta webhook normal
+        # Preprocesar el mensaje
+        user_msg = ia_service.preprocesar_mensaje(user_msg)
+        logger.info(f"Mensaje preprocesado: {user_msg}")
+
+        # Clasificar intención del mensaje
         intencion = ia_service.clasificar_mensaje(user_msg)
         logger.info(f"Intención detectada: {intencion}")
         
-        # Crear respuesta
-        respuesta = twilio_service.crear_respuesta()
-        
         # Procesar según la intención
+        
         if "facturar" in intencion:
             # Extraer datos del mensaje
             datos = parser.extraer_datos_factura(user_msg)
             logger.info(f"Datos extraídos: {datos}")
-            
+        
+            # Si la extracción regular falló, intentar con el LLM
+            if not datos['productos'] and not datos['rfc']:
+                datos_llm = ia_service.extraer_detalles_con_llm(user_msg)
+                if datos_llm:
+                    datos = datos_llm
+                    logger.info(f"Datos extraídos con LLM: {datos}")
+        
             # Validar datos
-            if not datos['rfc'] or not datos['producto'] or not datos['cantidad']:
-                respuesta.message("⚠️ No pude entender tu solicitud de facturación. Por favor, usa el formato:\n"
-                                "\"Facturar [cantidad] [producto] a RFC [tu_rfc]\"\n\n"
-                                "Por ejemplo: \"Facturar 2 licencias a RFC ABC123456XYZ\"")
+            if not datos['rfc']:
+                respuesta.message("⚠️ No pude identificar el RFC en tu solicitud. Por favor, incluye el RFC en tu mensaje.")
+            elif not datos['productos'] or len(datos['productos']) == 0:
+                respuesta.message("⚠️ No pude identificar productos en tu solicitud. Por favor, especifica los productos y cantidades.")
             elif not parser.validar_rfc(datos['rfc']):
-                respuesta.message("⚠️ El RFC proporcionado no tiene un formato válido. Un RFC debe tener 12 caracteres para personas morales o 13 para personas físicas, siguiendo el formato correcto.")
+                respuesta.message("⚠️ El RFC proporcionado no tiene un formato válido. Un RFC debe tener 12 caracteres para personas morales o 13 para personas físicas.")
             else:
-                # Generar factura
+                # Obtener precios de los productos
+                from producto_service import ProductoService
+                precios = ProductoService.obtener_precios_productos(datos['productos'])
+                
+                # Generar factura con múltiples productos
                 pdf_path = doc_generator.generar_factura(
                     datos["rfc"], 
-                    datos["producto"], 
-                    int(datos["cantidad"])
+                    datos["productos"],
+                    precios
                 )
                 
                 if pdf_path:
@@ -310,16 +363,47 @@ def test_webhook():
                             db_session.add(cliente)
                             db_session.flush()
                         
-                        # Crear registro de factura
+                        # Crear registro de factura (cabecera)
+                        total_factura = sum(item['cantidad'] * precios.get(item['nombre'].lower(), 100.0) for item in datos['productos'])
+                        
                         factura = Factura(
                             cliente_id=cliente.id,
-                            producto=datos["producto"],
-                            cantidad=int(datos["cantidad"]),
-                            precio_unitario=100.0,  # Valor por defecto
-                            total=100.0 * int(datos["cantidad"]),
+                            producto=", ".join([f"{p['cantidad']} {p['nombre']}" for p in datos['productos']]),
+                            cantidad=sum(p['cantidad'] for p in datos['productos']),
+                            precio_unitario=0.0,  # Ya no relevante para múltiples productos
+                            total=total_factura,
                             ruta_pdf=pdf_path
                         )
                         db_session.add(factura)
+                        db_session.flush()
+                        
+                        # Crear registros de detalle para cada producto
+                        for item in datos['productos']:
+                            nombre_producto = item['nombre']
+                            cantidad = item['cantidad']
+                            precio = precios.get(nombre_producto.lower(), 100.0)
+                            
+                            # Buscar producto en la BD o crear uno nuevo
+                            producto = db_session.query(Producto).filter(Producto.nombre.ilike(f"%{nombre_producto}%")).first()
+                            if not producto:
+                                producto = Producto(
+                                    codigo=nombre_producto[:10].upper(),
+                                    nombre=nombre_producto,
+                                    precio=precio
+                                )
+                                db_session.add(producto)
+                                db_session.flush()
+                            
+                            # Crear detalle de factura
+                            detalle = DetalleFactura(
+                                factura_id=factura.id,
+                                producto_id=producto.id,
+                                cantidad=cantidad,
+                                precio_unitario=precio,
+                                subtotal=cantidad * precio
+                            )
+                            db_session.add(detalle)
+                        
                         db_session.commit()
                     except Exception as e:
                         logger.error(f"Error guardando en DB: {e}")
@@ -328,15 +412,12 @@ def test_webhook():
                     # Enviar factura
                     logger.info(f"Enviando PDF: {pdf_path}")
                     if twilio_service.enviar_factura(pdf_path, sender):
-                        respuesta.message("✅ *Factura generada correctamente*\n\n"
-                                         f"📄 *Producto:* {datos['producto']}\n"
-                                         f"🔢 *Cantidad:* {datos['cantidad']}\n"
-                                         f"💼 *RFC:* {datos['rfc']}\n\n"
-                                         "La factura ha sido adjuntada a este mensaje. ¡Gracias por utilizar nuestro servicio!")
-                    else:
-                        respuesta.message("⚠️ Tu factura ha sido generada pero hubo un problema al enviarla. Por favor, intenta nuevamente en unos minutos o contacta a soporte.")
-                else:
-                    respuesta.message("❌ Lo siento, hubo un error al generar tu factura. Por favor, verifica tus datos e intenta nuevamente.")
+                        # Formar detalle de productos para el mensaje
+                        detalle_productos = ""
+                        for p in datos['productos']:
+                            precio = precios.get(p['nombre'].lower(), 100.0)
+                            subtotal = precio * p['cantidad']
+
         
         elif "consultar" in intencion:
             # Extraer RFC para consulta
@@ -374,18 +455,19 @@ def test_webhook():
                     logger.error(f"Error consultando facturas: {e}")
                     respuesta.message("❌ Ocurrió un error al consultar las facturas. Intenta nuevamente más tarde.")
         
+
         elif "ayuda" in intencion:
             # Enviar mensaje de ayuda
             respuesta.message(ia_service.generar_respuesta_ayuda())
-            
+
+
         elif "estado" in intencion:
             # Por ahora, dar una respuesta genérica para estado
             respuesta.message("🔍 El sistema de consulta de estado de facturas está en desarrollo. Próximamente podrás consultar el estado de tus trámites.")
-            
-        else:
-            # Respuesta para mensajes no reconocidos
-            respuesta.message("🤖 No he entendido tu mensaje. Puedes escribir *ayuda* para ver las opciones disponibles.")
-        
+    
+
+
+
         # Convertir la respuesta TwiML a HTML para mostrarla en el navegador
         twiml_response = str(respuesta)
         html_response = f"""

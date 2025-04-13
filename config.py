@@ -8,7 +8,7 @@ load_dotenv()
 # Configuración de la aplicación
 class Config:
     # Modo de prueba (no envía mensajes reales)
-    TEST_MODE = os.getenv("TEST_MODE", "False").lower() == "true"
+    TEST_MODE = os.getenv("TEST_MODE", "False").lower() == "false"
     
     # Twilio
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")

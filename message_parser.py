@@ -1,4 +1,4 @@
-# message_parser.py
+# message_parser.py (versión mejorada para varios productos)
 import re
 import logging
 
@@ -8,11 +8,14 @@ class MessageParser:
     @staticmethod
     def extraer_datos_factura(mensaje):
         """
-        Extrae datos de facturación del mensaje
-        Formato esperado: "facturar <cantidad> <producto> a RFC <rfc>"
+        Extrae datos de facturación del mensaje, soportando múltiples productos
         """
         try:
-            # Expresión regular mejorada para capturar diferentes formatos
+            # Verificar si el mensaje contiene múltiples productos
+            if re.search(r'facturar.*?(\d+.*?y.*?\d+)|(\d+.*?,.*?\d+)', mensaje, re.IGNORECASE):
+                return MessageParser.extraer_multiples_productos(mensaje)
+            
+            # Patrones para un solo producto
             patrones = [
                 # Patrón principal: "facturar 2 licencias a RFC ABC123"
                 r'facturar\s+(\d+)\s+(.+?)\s+a\s+RFC\s+(\w+)',
@@ -32,17 +35,54 @@ class MessageParser:
                 match = re.search(patron, mensaje, re.IGNORECASE)
                 if match:
                     return {
-                        "cantidad": match.group(1),
-                        "producto": match.group(2).strip(),
+                        "productos": [{"nombre": match.group(2).strip(), "cantidad": int(match.group(1))}],
                         "rfc": match.group(3).strip().upper()
                     }
             
             # Si no se encontró coincidencia con ningún patrón
             logger.warning(f"No se pudo extraer datos de: '{mensaje}'")
-            return {"cantidad": None, "producto": None, "rfc": None}
+            return {"productos": [], "rfc": None}
         except Exception as e:
             logger.error(f"Error extrayendo datos: {e}")
-            return {"cantidad": None, "producto": None, "rfc": None}
+            return {"productos": [], "rfc": None}
+    
+    @staticmethod
+    def extraer_multiples_productos(mensaje):
+        """
+        Extrae múltiples productos de un mensaje de facturación
+        """
+        try:
+            # Primero extraemos el RFC
+            rfc_match = re.search(r'RFC\s+(\w+)', mensaje, re.IGNORECASE)
+            rfc = rfc_match.group(1).strip().upper() if rfc_match else None
+            
+            # Extraer productos y cantidades
+            productos = []
+            
+            # Versión 1: Productos separados por coma o "y"
+            producto_matches = re.findall(r'(\d+)\s+([a-zñáéíóú\s]+?)(?:,|\sy\s|$)', mensaje.lower())
+            
+            # Versión 2: Forma más estructurada como "facturar los siguientes productos: 2 mesas, 3 sillas"
+            if not producto_matches:
+                lista_productos = re.search(r'(?:productos|artículos|items):\s*(.+?)(?:para|a|al|RFC|$)', mensaje, re.IGNORECASE)
+                if lista_productos:
+                    lista = lista_productos.group(1)
+                    producto_matches = re.findall(r'(\d+)\s+([a-zñáéíóú\s]+?)(?:,|\sy\s|$)', lista.lower())
+            
+            # Procesar los productos encontrados
+            for cantidad, nombre in producto_matches:
+                productos.append({
+                    "nombre": nombre.strip(),
+                    "cantidad": int(cantidad)
+                })
+            
+            return {
+                "productos": productos,
+                "rfc": rfc
+            }
+        except Exception as e:
+            logger.error(f"Error extrayendo múltiples productos: {e}")
+            return {"productos": [], "rfc": None}
     
     @staticmethod
     def extraer_datos_consulta(mensaje):

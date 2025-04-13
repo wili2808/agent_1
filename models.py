@@ -32,6 +32,32 @@ class Factura(Base):
     
     def __repr__(self):
         return f"<Factura(id={self.id}, cliente_id={self.cliente_id}, producto='{self.producto}')>"
+    
+
+class Producto(Base):
+    __tablename__ = "productos"
+    id = Column(Integer, primary_key=True)
+    codigo = Column(String(50), unique=True, nullable=False)
+    nombre = Column(String(100), nullable=False)
+    descripcion = Column(String(200))
+    precio = Column(Float, default=0.0)
+    
+    def __repr__(self):
+        return f"<Producto(codigo='{self.codigo}', nombre='{self.nombre}', precio={self.precio})>"
+
+# Modificar la clase Factura para soportar múltiples productos
+
+class DetalleFactura(Base):
+    __tablename__ = "detalles_factura"
+    id = Column(Integer, primary_key=True)
+    factura_id = Column(Integer, nullable=False)
+    producto_id = Column(Integer, nullable=False)
+    cantidad = Column(Integer, nullable=False)
+    precio_unitario = Column(Float, default=0.0)
+    subtotal = Column(Float, default=0.0)
+    
+    def __repr__(self):
+        return f"<DetalleFactura(factura_id={self.factura_id}, producto_id={self.producto_id}, cantidad={self.cantidad})>"
 
 # Inicialización de la base de datos
 def init_db():
